@@ -5,6 +5,9 @@ import "context"
 var (
 	_ AuthClient = (*RESTClient)(nil)
 	_ AuthClient = (*GRPCClient)(nil)
+
+	_ InternalAuthClient = (*RESTClient)(nil)
+	_ InternalAuthClient = (*GRPCClient)(nil)
 )
 
 type AuthClient interface {
@@ -18,4 +21,8 @@ type AuthClient interface {
 	RefreshToken(ctx context.Context, req RefreshTokenRequest) (RefreshTokenResponse, error)
 	GenerateConfirmToken(ctx context.Context, req GenerateConfirmTokenRequest) (GenerateConfirmTokenResponse, error)
 	ValidateToken(ctx context.Context, req ValidateTokenRequest) (ValidateTokenResponse, error)
+}
+
+type InternalAuthClient interface {
+	ValidateInternalAccess(ctx context.Context, req InternalAccessRequest) (InternalAccessResponse, error)
 }

@@ -16,6 +16,7 @@ import (
 type RESTClient struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
 }
 
 type RESTClientOption func(*RESTClient)
@@ -46,6 +47,13 @@ func NewRESTClient(baseURL string, opts ...RESTClientOption) (*RESTClient, error
 	for _, opt := range opts {
 		opt(client)
 	}
+
+	apiKey, err := requiredAPIKeyFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	client.apiKey = apiKey
+
 	return client, nil
 }
 
@@ -114,6 +122,17 @@ func (c *RESTClient) ValidateToken(ctx context.Context, req ValidateTokenRequest
 	return doPost[ValidateTokenResponse](ctx, c, "/auth/validate-token", req, "")
 }
 
+func (c *RESTClient) ValidateInternalAccess(ctx context.Context, req InternalAccessRequest) (InternalAccessResponse, error) {
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		return InternalAccessResponse{}, errors.New("api key is required")
+	}
+
+	return doPost[InternalAccessResponse](ctx, c, "/auth/internal/access", map[string]string{
+		"api_key": apiKey,
+	}, "")
+}
+
 func doPost[T any](ctx context.Context, c *RESTClient, path string, payload any, accessToken string) (T, error) {
 	var zero T
 
@@ -130,6 +149,7 @@ func doPost[T any](ctx context.Context, c *RESTClient, path string, payload any,
 	if accessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
+	req.Header.Set("X-API-Key", c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -142,19 +162,7 @@ func doPost[T any](ctx context.Context, c *RESTClient, path string, payload any,
 		return zero, err
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		apiErr := &APIError{StatusCode: resp.StatusCode, Body: string(body)}
-		var parsed struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(body, &parsed) == nil {
-			if parsed.Error != "" {
-				apiErr.Message = parsed.Error
-			} else if parsed.Message != "" {
-				apiErr.Message = parsed.Message
-			}
-		}
-		return zero, apiErr
+		return zero, parseAPIError(resp.StatusCode, body)
 	}
 
 	var out T
@@ -162,6 +170,22 @@ func doPost[T any](ctx context.Context, c *RESTClient, path string, payload any,
 		return zero, err
 	}
 	return out, nil
+}
+
+func parseAPIError(statusCode int, body []byte) error {
+	apiErr := &APIError{StatusCode: statusCode, Body: string(body)}
+	var parsed struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &parsed) == nil {
+		if parsed.Error != "" {
+			apiErr.Message = parsed.Error
+		} else if parsed.Message != "" {
+			apiErr.Message = parsed.Message
+		}
+	}
+	return apiErr
 }
 
 const maxResponseSize = 1 << 20 // 1MB

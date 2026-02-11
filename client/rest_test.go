@@ -19,6 +19,14 @@ func TestRESTClient_BaseURLValidation(t *testing.T) {
 	}
 }
 
+func TestRESTClient_RequiresAPPAPIKey(t *testing.T) {
+	t.Setenv(appAPIKeyEnvVar, "")
+
+	if _, err := NewRESTClient("http://localhost:8080"); err == nil {
+		t.Fatalf("expected error when %s is missing", appAPIKeyEnvVar)
+	}
+}
+
 func TestRESTClient_Logout_SendsAuthHeader(t *testing.T) {
 	var gotAuth string
 	var gotBody string
@@ -225,5 +233,102 @@ func TestRESTClient_GenerateConfirmToken(t *testing.T) {
 	}
 	if res.ConfirmToken != "t" {
 		t.Fatalf("unexpected response: %+v", res)
+	}
+}
+
+func TestRESTClient_ValidateInternalAccess_SendsXAPIKey(t *testing.T) {
+	var gotHeader string
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/auth/internal/access" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		gotHeader = r.Header.Get("X-API-Key")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		_ = json.NewEncoder(w).Encode(InternalAccessResponse{
+			ServiceName:   "profile-service",
+			AllowedAccess: []string{"auth", "notifications"},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewRESTClient(server.URL)
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	res, err := client.ValidateInternalAccess(context.Background(), InternalAccessRequest{
+		APIKey: "test-key",
+	})
+	if err != nil {
+		t.Fatalf("validate internal access failed: %v", err)
+	}
+	if gotHeader != "service-key" {
+		t.Fatalf("expected X-API-Key header, got %q", gotHeader)
+	}
+	if !strings.Contains(gotBody, `"api_key":"test-key"`) {
+		t.Fatalf("expected api_key in request body, got %s", gotBody)
+	}
+	if res.ServiceName != "profile-service" || len(res.AllowedAccess) != 2 {
+		t.Fatalf("unexpected response: %+v", res)
+	}
+}
+
+func TestRESTClient_ValidateInternalAccess_RequiresAPIKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called")
+	}))
+	defer server.Close()
+
+	client, err := NewRESTClient(server.URL)
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	_, err = client.ValidateInternalAccess(context.Background(), InternalAccessRequest{APIKey: "  "})
+	if err == nil {
+		t.Fatalf("expected error for missing api key")
+	}
+}
+
+func TestRESTClient_ValidateInternalAccess_RequiresClientAPIKey(t *testing.T) {
+	t.Setenv(appAPIKeyEnvVar, "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	_, err := NewRESTClient(server.URL)
+	if err == nil {
+		t.Fatalf("expected error for missing %s", appAPIKeyEnvVar)
+	}
+}
+
+func TestRESTClient_AttachesEnvAPIKeyToAllRequests(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-API-Key")
+		_ = json.NewEncoder(w).Encode(LoginResponse{
+			AccessToken:  "a",
+			RefreshToken: "b",
+			ExpiresIn:    60,
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewRESTClient(server.URL)
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	_, err = client.Login(context.Background(), LoginRequest{Email: "a", Password: "b"})
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if gotHeader != "service-key" {
+		t.Fatalf("expected X-API-Key header from env, got %q", gotHeader)
 	}
 }

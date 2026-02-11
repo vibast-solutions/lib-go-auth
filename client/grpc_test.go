@@ -8,6 +8,7 @@ import (
 	authpb "github.com/vibast-solutions/ms-go-auth/app/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type testAuthServer struct {
@@ -17,9 +18,17 @@ type testAuthServer struct {
 	lastChange        *authpb.ChangePasswordRequest
 	lastLogout        *authpb.LogoutRequest
 	lastRefresh       *authpb.RefreshTokenRequest
+	lastInternal      *authpb.ValidateInternalAccessRequest
+	lastAPIKey        string
 }
 
 func (s *testAuthServer) Login(ctx context.Context, req *authpb.LoginRequest) (*authpb.LoginResponse, error) {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		values := md.Get("x-api-key")
+		if len(values) > 0 {
+			s.lastAPIKey = values[0]
+		}
+	}
 	s.lastTokenDuration = req.TokenDuration
 	return &authpb.LoginResponse{
 		AccessToken:  "a",
@@ -56,6 +65,14 @@ func (s *testAuthServer) ValidateToken(ctx context.Context, req *authpb.Validate
 		Valid:  true,
 		UserId: 1,
 		Email:  "user@example.com",
+	}, nil
+}
+
+func (s *testAuthServer) ValidateInternalAccess(ctx context.Context, req *authpb.ValidateInternalAccessRequest) (*authpb.ValidateInternalAccessResponse, error) {
+	s.lastInternal = req
+	return &authpb.ValidateInternalAccessResponse{
+		ServiceName:   "profile-service",
+		AllowedAccess: []string{"auth", "notifications"},
 	}, nil
 }
 
@@ -119,6 +136,50 @@ func TestGRPCClient_ValidateToken(t *testing.T) {
 	}
 	if !resp.Valid || resp.UserID != 1 || resp.Email != "user@example.com" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestGRPCClient_ValidateInternalAccess(t *testing.T) {
+	_, conn, handler, cleanup := newTestGRPCServer(t)
+	defer cleanup()
+
+	client := NewGRPCClient(conn)
+	resp, err := client.ValidateInternalAccess(context.Background(), InternalAccessRequest{APIKey: "key"})
+	if err != nil {
+		t.Fatalf("validate internal access failed: %v", err)
+	}
+	if resp.ServiceName != "profile-service" || len(resp.AllowedAccess) != 2 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if handler.lastInternal == nil || handler.lastInternal.ApiKey != "key" {
+		t.Fatalf("expected ValidateInternalAccess to be called with api key")
+	}
+}
+
+func TestGRPCClient_AttachesEnvAPIKeyMetadata(t *testing.T) {
+	_, conn, handler, cleanup := newTestGRPCServer(t)
+	defer cleanup()
+
+	client := NewGRPCClient(conn)
+	_, err := client.Login(context.Background(), LoginRequest{Email: "user@example.com", Password: "pass"})
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if handler.lastAPIKey != "service-key" {
+		t.Fatalf("expected x-api-key metadata from env, got %q", handler.lastAPIKey)
+	}
+}
+
+func TestGRPCClient_RequiresAPPAPIKey(t *testing.T) {
+	t.Setenv(appAPIKeyEnvVar, "")
+
+	_, conn, _, cleanup := newTestGRPCServer(t)
+	defer cleanup()
+
+	client := NewGRPCClient(conn)
+	_, err := client.Login(context.Background(), LoginRequest{Email: "user@example.com", Password: "pass"})
+	if err == nil {
+		t.Fatalf("expected error when %s is missing", appAPIKeyEnvVar)
 	}
 }
 

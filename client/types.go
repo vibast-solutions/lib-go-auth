@@ -97,3 +97,12 @@ type ValidateTokenResponse struct {
 	UserID uint64 `json:"user_id,omitempty"`
 	Email  string `json:"email,omitempty"`
 }
+
+type InternalAccessRequest struct {
+	APIKey string
+}
+
+type InternalAccessResponse struct {
+	ServiceName   string   `json:"service_name"`
+	AllowedAccess []string `json:"allowed_access"`
+}
